@@ -2,6 +2,7 @@
 
 require 'base64'
 require 'open-uri'
+require 'net/http'
 require 'httparty'
 require 'htmlentities'
 require 'nokogiri'
@@ -13,7 +14,7 @@ module Hertools
     # Arguments
     # url: the url of a webpage
     # options:
-    #   html_parser: %w[httparty nokogiri]
+    #   html_parser: %w[httparty nokogiri net_http]
     #   root_path: existing file directory
     def crawl_title_and_favicon_file(url, options = {})
       puts '>>> Parsing the arguments <<<'
@@ -27,10 +28,8 @@ module Hertools
       end
 
       puts '>>> Analysing the http response <<<'
-      if httparty?
-        response = HTTParty.get(@url)
-        res = response.body
-      else
+      case @html_parser
+      when 'nokogiri'
         response = HTTParty.head(@url)
         res = begin
                 Nokogiri::HTML(URI.open(url), nil, 'UTF-8')
@@ -38,6 +37,12 @@ module Hertools
                 puts e
                 nil
               end
+      when 'httparty'
+        response = HTTParty.get(@url)
+        res = response.body
+      else
+        response = Net::HTTP.get_response(URI(@url))
+        res = response.body.force_encoding("utf-8")
       end
       puts "HttpCode: #{response.code}"
 
@@ -47,27 +52,27 @@ module Hertools
         @favicon_url = "#{@index_url}/favicon.ico"
         puts "Use the default favicon url: #{@favicon_url}."
       else
-        @title = if httparty?
-                   res[%r{<title>\n*(.*)\n*</title>}, 1].to_s
-                 else
+        @title = if nokogiri?
                    res.xpath('//head/title')[0]&.content.to_s
+                 else
+                   res[%r{<title>\n*(.*)\n*</title>}, 1].to_s
                  end
         if @title.empty?
           puts 'Not found the title!'
           puts 'Use the domain name as the title.'
           @title = @domain_name
         end
-        if httparty?
+        unless nokogiri?
           coder = HTMLEntities.new
           @title = coder.decode(@title)
         end
         puts "Title: #{@title}"
 
-        @favicon_url = if httparty?
-                         res[/<link rel="icon".*href="([^"]+)/, 1].to_s
-                       else
+        @favicon_url = if nokogiri?
                          favicon_links = res.xpath('//head/link[@rel="icon"]')
                          favicon_links.empty? ? '' : favicon_links[0][:href].to_s
+                       else
+                         res[/<link rel="icon".*href="([^"]+)/, 1].to_s
                        end
         if @favicon_url.empty?
           puts 'Not found the favicon url!'
@@ -147,10 +152,10 @@ module Hertools
 
     def parse_options(options)
       options = Hash(options)
-      html_parser = options.fetch(:html_parser) { 'httparty' }
+      html_parser = options.fetch(:html_parser) { 'net_http' }
       @old_html_parser = @html_parser
-      @html_parser = %w[httparty nokogiri].include?(html_parser) ? html_parser : 'httparty'
-      reset_httparty_judge_result if @old_html_parser != @html_parser
+      @html_parser = %w[httparty nokogiri].include?(html_parser) ? html_parser : 'net_http'
+      rejudge_nokogiri if @old_html_parser != @html_parser
       puts "HtmlParser: #{@html_parser}"
       root_path = options.fetch(:root_path) { Dir.pwd }
       @root_path = (File.directory?(root_path) ? root_path : Dir.pwd).chomp('/')
@@ -161,12 +166,12 @@ module Hertools
       false
     end
 
-    def httparty?
-      @httparty_judge_result ||= @html_parser == 'httparty'
+    def nokogiri?
+      @judge_nokogiri ||= @html_parser == 'nokogiri'
     end
 
-    def reset_httparty_judge_result
-      @httparty_judge_result = nil
+    def rejudge_nokogiri
+      @judge_nokogiri = nil
     end
   end
 end
